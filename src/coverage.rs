@@ -122,6 +122,13 @@ pub fn compute_coverage(
     })
 }
 
+pub fn scan_source_files_pub(
+    repo_path: &Path,
+    patterns: &[&str],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    scan_source_files(repo_path, patterns)
+}
+
 fn scan_source_files(
     repo_path: &Path,
     patterns: &[&str],

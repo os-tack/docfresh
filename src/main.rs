@@ -3,8 +3,9 @@ mod coverage;
 mod git;
 mod manifest;
 mod report;
+mod suggest;
 
-use crate::manifest::{Manifest, Page, SourceRepo, Status, VerifiedAt};
+use crate::manifest::{Manifest, Page, Source, SourceRepo, Status, VerifiedAt};
 use crate::report::Format;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -109,6 +110,38 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+
+    /// Suggest source mappings for unmapped files
+    Suggest {
+        /// Minimum confidence threshold (0.0-1.0)
+        #[arg(long, default_value = "0.2")]
+        min_confidence: f64,
+
+        /// Auto-apply suggestions above this confidence
+        #[arg(long)]
+        apply: Option<f64>,
+
+        /// Only suggest for a specific source file
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Add a source mapping to a page
+    Map {
+        /// Page route
+        route: String,
+
+        /// Source file path (relative to source repo)
+        source: String,
+
+        /// Optional section markers
+        #[arg(long)]
+        sections: Vec<String>,
+    },
 }
 
 fn main() {
@@ -132,6 +165,17 @@ fn main() {
             markdown,
         } => cmd_status(&cli, route.as_deref(), *json, *markdown),
         Commands::Report { format } => cmd_report(&cli, format),
+        Commands::Suggest {
+            min_confidence,
+            apply,
+            file,
+            json,
+        } => cmd_suggest(&cli, *min_confidence, *apply, file.as_deref(), *json),
+        Commands::Map {
+            route,
+            source,
+            sections,
+        } => cmd_map(&cli, route, source, sections),
     };
 
     if let Err(e) = result {
@@ -164,6 +208,7 @@ fn cmd_init(
             remote: None,
             default_branch: "main".to_string(),
         },
+        exclude_patterns: vec![],
         pages,
     };
 
@@ -427,6 +472,177 @@ fn cmd_report(cli: &Cli, format_str: &str) -> Result<(), Box<dyn std::error::Err
     if has_stale {
         process::exit(1);
     }
+    Ok(())
+}
+
+fn cmd_suggest(
+    cli: &Cli,
+    min_confidence: f64,
+    apply_threshold: Option<f64>,
+    file_filter: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = Manifest::load(&cli.manifest)?;
+    let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
+    let source_repo = resolve_source_repo(cli, &manifest, manifest_dir)?;
+
+    // Get source files to suggest for
+    let source_files = if let Some(file) = file_filter {
+        vec![file.to_string()]
+    } else {
+        let patterns = coverage::default_scan_patterns();
+        let all_files = coverage::scan_source_files_pub(&source_repo, &patterns)?;
+        // Filter by exclude patterns
+        filter_excluded(&all_files, &manifest.exclude_patterns)
+    };
+
+    let report = suggest::suggest_mappings(
+        &manifest,
+        &source_repo,
+        manifest_dir,
+        &source_files,
+        min_confidence,
+    );
+
+    if json {
+        let output = format_suggest_json(&report);
+        println!("{output}");
+    } else {
+        format_suggest_text(&report);
+    }
+
+    // Auto-apply if requested
+    if let Some(threshold) = apply_threshold {
+        let mut applied = 0;
+        for s in &report.suggestions {
+            if s.confidence >= threshold {
+                if let Some(idx) = manifest.find_page(&s.route) {
+                    let already = manifest.pages[idx]
+                        .sources
+                        .iter()
+                        .any(|src| src.path == s.source_path);
+                    if !already {
+                        manifest.pages[idx].sources.push(Source {
+                            path: s.source_path.clone(),
+                            sections: vec![],
+                        });
+                        applied += 1;
+                    }
+                }
+            }
+        }
+        if applied > 0 {
+            manifest.save(&cli.manifest)?;
+            println!("\nApplied {applied} mappings (threshold: {threshold:.1})");
+        }
+    }
+
+    Ok(())
+}
+
+fn filter_excluded(files: &[String], patterns: &[String]) -> Vec<String> {
+    if patterns.is_empty() {
+        return files.to_vec();
+    }
+    let compiled: Vec<glob::Pattern> = patterns
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
+    files
+        .iter()
+        .filter(|f| !compiled.iter().any(|pat| pat.matches(f)))
+        .cloned()
+        .collect()
+}
+
+fn format_suggest_json(report: &suggest::SuggestReport) -> String {
+    let suggestions: Vec<serde_json::Value> = report
+        .suggestions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "source": s.source_path,
+                "route": s.route,
+                "confidence": (s.confidence * 100.0).round() / 100.0,
+                "reasons": s.reasons,
+            })
+        })
+        .collect();
+    let output = serde_json::json!({
+        "suggestions": suggestions,
+        "no_match": report.no_match,
+    });
+    serde_json::to_string_pretty(&output).unwrap_or_default()
+}
+
+fn format_suggest_text(report: &suggest::SuggestReport) {
+    use colored::Colorize;
+
+    if report.suggestions.is_empty() && report.no_match.is_empty() {
+        println!("All source files are already mapped.");
+        return;
+    }
+
+    if !report.suggestions.is_empty() {
+        println!(
+            "{}",
+            format!("SUGGESTED MAPPINGS ({}):", report.suggestions.len())
+                .green()
+                .bold()
+        );
+        for s in &report.suggestions {
+            let pct = format!("{:.0}%", s.confidence * 100.0);
+            println!(
+                "  {} -> {} ({})",
+                s.source_path,
+                s.route.cyan(),
+                pct.yellow()
+            );
+            for reason in &s.reasons {
+                println!("    {reason}");
+            }
+        }
+        println!();
+        println!("  Apply with: docfresh map <route> <source>  (or --apply <threshold>)");
+    }
+
+    if !report.no_match.is_empty() {
+        println!();
+        println!(
+            "{}",
+            format!("NO MATCH ({}):", report.no_match.len()).dimmed()
+        );
+        for f in &report.no_match {
+            println!("  {f}");
+        }
+    }
+}
+
+fn cmd_map(
+    cli: &Cli,
+    route: &str,
+    source: &str,
+    sections: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = Manifest::load(&cli.manifest)?;
+
+    let idx = manifest
+        .find_page(route)
+        .ok_or_else(|| format!("page '{route}' not found in manifest"))?;
+
+    // Check for duplicates
+    if manifest.pages[idx].sources.iter().any(|s| s.path == source) {
+        println!("{source} is already mapped to {route}");
+        return Ok(());
+    }
+
+    manifest.pages[idx].sources.push(Source {
+        path: source.to_string(),
+        sections: sections.to_vec(),
+    });
+
+    manifest.save(&cli.manifest)?;
+    println!("Mapped {source} -> {route}");
     Ok(())
 }
 

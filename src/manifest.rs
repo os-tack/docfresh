@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub struct Manifest {
     pub version: u32,
     pub source_repo: SourceRepo,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_patterns: Vec<String>,
     pub pages: Vec<Page>,
 }
 
