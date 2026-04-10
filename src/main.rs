@@ -380,7 +380,8 @@ fn scan_pages(
 
     for entry in glob::glob(pattern).map_err(|e| format!("invalid glob pattern: {e}"))? {
         let path = entry?;
-        let path_str = path.to_string_lossy().to_string();
+        // Normalize to forward slashes for cross-platform route consistency
+        let path_str = path.to_string_lossy().replace('\\', "/");
 
         // Strip base dir and extension to get route
         let relative = path_str
