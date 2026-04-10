@@ -125,10 +125,10 @@ format = "json"
 
     #[test]
     fn parse_partial_config() {
-        let toml = r#"
+        let toml = r"
 [ci]
 fail_on_unmapped = true
-"#;
+";
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ci.fail_on_unmapped);
         // Defaults preserved
