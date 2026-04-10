@@ -62,7 +62,15 @@ fn extract_source_terms(path: &str, repo_path: &Path) -> Vec<String> {
         let ext = Path::new(path).extension().and_then(|e| e.to_str());
         match ext {
             Some("rs") => extract_rust_terms(&content, &mut terms),
-            Some("md") => extract_markdown_terms(&content, &mut terms),
+            Some("go") => extract_go_terms(&content, &mut terms),
+            Some("py") => extract_python_terms(&content, &mut terms),
+            Some("ts" | "tsx" | "js" | "jsx") => extract_typescript_terms(&content, &mut terms),
+            Some("java") => extract_java_terms(&content, &mut terms),
+            Some("cs") => extract_csharp_terms(&content, &mut terms),
+            Some("rb") => extract_ruby_terms(&content, &mut terms),
+            Some("php") => extract_php_terms(&content, &mut terms),
+            Some("cpp" | "cc" | "h" | "hpp") => extract_cpp_terms(&content, &mut terms),
+            Some("md" | "mdx" | "rst") => extract_markdown_terms(&content, &mut terms),
             _ => {}
         }
     }
@@ -113,7 +121,6 @@ fn extract_rust_terms(content: &str, terms: &mut Vec<String>) {
 fn extract_markdown_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
-        // Headings
         if let Some(heading) = trimmed.strip_prefix("# ").or(trimmed.strip_prefix("## ")) {
             for word in heading.split_whitespace() {
                 let clean = word
@@ -123,6 +130,318 @@ fn extract_markdown_terms(content: &str, terms: &mut Vec<String>) {
                     terms.push(clean);
                 }
             }
+        }
+    }
+}
+
+fn extract_go_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Exported functions and types (uppercase first letter)
+        for prefix in ["func ", "type "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                // Skip methods: func (r *Receiver) Name(...)
+                let name_part = if rest.starts_with('(') {
+                    // Method — find the name after the receiver
+                    rest.split(')').nth(1).unwrap_or("").trim()
+                } else {
+                    rest
+                };
+                let name = name_part
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if name.len() >= 3 && name.starts_with(|c: char| c.is_uppercase()) {
+                    terms.push(name.to_lowercase());
+                    for word in split_camel_case(name) {
+                        if word.len() >= 3 {
+                            terms.push(word.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        // Go doc comments
+        if let Some(doc) = trimmed.strip_prefix("// ") {
+            extract_doc_words(doc, terms);
+        }
+    }
+}
+
+fn extract_python_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Functions and classes
+        for prefix in ["def ", "class "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                // Skip private (single underscore is conventional private)
+                if name.len() >= 3 && !name.starts_with('_') {
+                    terms.push(name.to_lowercase());
+                    for part in name.split('_') {
+                        if part.len() >= 3 {
+                            terms.push(part.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        // Docstrings (first line of triple-quoted strings)
+        if let Some(doc) = trimmed
+            .strip_prefix("\"\"\"")
+            .or(trimmed.strip_prefix("'''"))
+        {
+            extract_doc_words(doc, terms);
+        }
+    }
+}
+
+fn extract_typescript_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Exported items
+        if let Some(rest) = trimmed.strip_prefix("export ") {
+            let rest = rest.strip_prefix("default ").unwrap_or(rest);
+            for keyword in [
+                "function ",
+                "class ",
+                "interface ",
+                "type ",
+                "const ",
+                "enum ",
+                "async function ",
+            ] {
+                if let Some(name_rest) = rest.strip_prefix(keyword) {
+                    let name = name_rest
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if name.len() >= 3 {
+                        terms.push(name.to_lowercase());
+                        for word in split_camel_case(name) {
+                            if word.len() >= 3 {
+                                terms.push(word.to_lowercase());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        // JSDoc comments
+        if let Some(doc) = trimmed.strip_prefix("* ").or(trimmed.strip_prefix("/** ")) {
+            if !doc.starts_with('@') {
+                extract_doc_words(doc, terms);
+            }
+        }
+    }
+}
+
+fn extract_java_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Public items
+        if let Some(rest) = trimmed.strip_prefix("public ") {
+            let rest = rest
+                .strip_prefix("static ")
+                .unwrap_or(rest)
+                .strip_prefix("final ")
+                .unwrap_or(rest)
+                .strip_prefix("abstract ")
+                .unwrap_or(rest);
+            for keyword in ["class ", "interface ", "enum ", "record "] {
+                if let Some(name_rest) = rest.strip_prefix(keyword) {
+                    let name = name_rest
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if name.len() >= 3 {
+                        terms.push(name.to_lowercase());
+                        for word in split_camel_case(name) {
+                            if word.len() >= 3 {
+                                terms.push(word.to_lowercase());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        // Javadoc
+        if let Some(doc) = trimmed.strip_prefix("* ").or(trimmed.strip_prefix("/** ")) {
+            if !doc.starts_with('@') {
+                extract_doc_words(doc, terms);
+            }
+        }
+    }
+}
+
+fn extract_csharp_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("public ") {
+            let rest = rest
+                .strip_prefix("static ")
+                .unwrap_or(rest)
+                .strip_prefix("sealed ")
+                .unwrap_or(rest)
+                .strip_prefix("abstract ")
+                .unwrap_or(rest)
+                .strip_prefix("partial ")
+                .unwrap_or(rest);
+            for keyword in ["class ", "interface ", "enum ", "struct ", "record "] {
+                if let Some(name_rest) = rest.strip_prefix(keyword) {
+                    let name = name_rest
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if name.len() >= 3 {
+                        terms.push(name.to_lowercase());
+                        for word in split_camel_case(name) {
+                            if word.len() >= 3 {
+                                terms.push(word.to_lowercase());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        // XML doc comments
+        if let Some(doc) = trimmed.strip_prefix("/// ") {
+            // Strip XML tags
+            let text = doc
+                .replace(['<', '>'], " ")
+                .replace("/summary", "")
+                .replace("summary", "");
+            extract_doc_words(&text, terms);
+        }
+    }
+}
+
+fn extract_ruby_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        for prefix in ["def ", "class ", "module "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let rest = rest.strip_prefix("self.").unwrap_or(rest);
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if name.len() >= 3 {
+                    terms.push(name.to_lowercase());
+                    for part in name.split('_') {
+                        if part.len() >= 3 {
+                            terms.push(part.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        // YARD doc comments
+        if let Some(doc) = trimmed.strip_prefix("# ") {
+            if !doc.starts_with('@') {
+                extract_doc_words(doc, terms);
+            }
+        }
+    }
+}
+
+fn extract_php_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("public ")
+            .or(trimmed.strip_prefix("function "))
+        {
+            let rest = rest
+                .strip_prefix("static ")
+                .unwrap_or(rest)
+                .strip_prefix("function ")
+                .unwrap_or(rest);
+            let name = rest
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("");
+            if name.len() >= 3 {
+                terms.push(name.to_lowercase());
+                for word in split_camel_case(name) {
+                    if word.len() >= 3 {
+                        terms.push(word.to_lowercase());
+                    }
+                }
+            }
+        }
+        for prefix in ["class ", "interface ", "trait ", "enum "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if name.len() >= 3 {
+                    terms.push(name.to_lowercase());
+                    for word in split_camel_case(name) {
+                        if word.len() >= 3 {
+                            terms.push(word.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        // PHPDoc
+        if let Some(doc) = trimmed.strip_prefix("* ").or(trimmed.strip_prefix("/** ")) {
+            if !doc.starts_with('@') {
+                extract_doc_words(doc, terms);
+            }
+        }
+    }
+}
+
+fn extract_cpp_terms(content: &str, terms: &mut Vec<String>) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Class and struct declarations
+        for prefix in ["class ", "struct ", "enum ", "namespace "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if name.len() >= 3 {
+                    terms.push(name.to_lowercase());
+                    for word in split_camel_case(name) {
+                        if word.len() >= 3 {
+                            terms.push(word.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        // Doxygen comments
+        if let Some(doc) = trimmed
+            .strip_prefix("/// ")
+            .or(trimmed.strip_prefix("//! "))
+            .or(trimmed.strip_prefix("* "))
+        {
+            if !doc.starts_with('@') && !doc.starts_with('\\') {
+                extract_doc_words(doc, terms);
+            }
+        }
+    }
+}
+
+/// Shared helper: extract meaningful words from a doc comment line.
+fn extract_doc_words(doc: &str, terms: &mut Vec<String>) {
+    for word in doc.split_whitespace() {
+        let clean = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        if clean.len() >= 4 {
+            terms.push(clean);
         }
     }
 }

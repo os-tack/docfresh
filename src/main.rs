@@ -2,6 +2,7 @@ mod audit;
 mod coverage;
 mod git;
 mod manifest;
+mod presets;
 mod report;
 mod suggest;
 
@@ -39,13 +40,25 @@ enum Commands {
         #[arg(long)]
         source_repo: Option<String>,
 
-        /// Glob pattern for page files
-        #[arg(long, default_value = "src/pages/**/*.astro")]
-        pattern: String,
+        /// Site framework preset (auto-detected if omitted)
+        #[arg(long)]
+        site: Option<String>,
 
-        /// Base directory to strip from file paths for route generation
-        #[arg(long, default_value = "src/pages")]
-        base_dir: String,
+        /// Source language preset (auto-detected if omitted)
+        #[arg(long)]
+        lang: Option<String>,
+
+        /// Override glob pattern for page files
+        #[arg(long)]
+        pattern: Option<String>,
+
+        /// Override base directory for route generation
+        #[arg(long)]
+        base_dir: Option<String>,
+
+        /// List available presets
+        #[arg(long)]
+        list_presets: bool,
     },
 
     /// Check all pages for staleness
@@ -150,9 +163,20 @@ fn main() {
     let result = match &cli.command {
         Commands::Init {
             source_repo,
+            site,
+            lang,
             pattern,
             base_dir,
-        } => cmd_init(&cli.manifest, source_repo.as_deref(), pattern, base_dir),
+            list_presets,
+        } => cmd_init(
+            &cli.manifest,
+            source_repo.as_deref(),
+            site.as_deref(),
+            lang.as_deref(),
+            pattern.as_deref(),
+            base_dir.as_deref(),
+            *list_presets,
+        ),
         Commands::Audit { tag, json } => cmd_audit(&cli, tag.as_deref(), *json),
         Commands::Coverage { json, scan } => cmd_coverage(&cli, *json, scan),
         Commands::Verify { route, all, sha } => {
@@ -187,9 +211,29 @@ fn main() {
 fn cmd_init(
     manifest_path: &Path,
     source_repo: Option<&str>,
-    pattern: &str,
-    base_dir: &str,
+    site_preset_name: Option<&str>,
+    lang_preset_name: Option<&str>,
+    pattern_override: Option<&str>,
+    base_dir_override: Option<&str>,
+    list_presets: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if list_presets {
+        println!("Site frameworks:");
+        for p in presets::all_site_presets() {
+            println!(
+                "  {:<16} pages: {:<35} base: {}",
+                p.name,
+                p.page_patterns.join(", "),
+                p.base_dir
+            );
+        }
+        println!("\nSource languages:");
+        for p in presets::all_source_presets() {
+            println!("  {:<16} scan: {}", p.name, p.scan_patterns.join(", "));
+        }
+        return Ok(());
+    }
+
     if manifest_path.exists() {
         return Err(format!(
             "'{}' already exists. Delete it first to re-initialize.",
@@ -198,13 +242,69 @@ fn cmd_init(
         .into());
     }
 
-    let pages = scan_pages(pattern, base_dir)?;
+    let cwd = std::env::current_dir()?;
+
+    // Resolve site preset
+    let site_preset = if let Some(name) = site_preset_name {
+        presets::find_site_preset(name).ok_or_else(|| {
+            format!("unknown site preset '{name}'. Use --list-presets to see available presets.")
+        })?
+    } else {
+        let detected = presets::detect_site_framework(&cwd);
+        if let Some(p) = detected {
+            println!("Detected site framework: {}", p.name);
+            p
+        } else {
+            println!("No site framework detected, using markdown defaults.");
+            println!("Use --site <preset> to specify. --list-presets shows options.");
+            &presets::MARKDOWN
+        }
+    };
+
+    // Use overrides or preset defaults
+    let pattern = pattern_override.unwrap_or(site_preset.page_patterns[0]);
+    let base_dir = base_dir_override.unwrap_or(site_preset.base_dir);
+
+    // Scan pages using all preset patterns if no override
+    let pages = if pattern_override.is_some() {
+        scan_pages(pattern, base_dir, site_preset)?
+    } else {
+        let mut all_pages = Vec::new();
+        for pat in site_preset.page_patterns {
+            if let Ok(mut pages) = scan_pages(pat, base_dir, site_preset) {
+                all_pages.append(&mut pages);
+            }
+        }
+        all_pages.sort_by(|a, b| a.route.cmp(&b.route));
+        all_pages.dedup_by(|a, b| a.route == b.route);
+        all_pages
+    };
+
     println!("Found {} pages", pages.len());
+
+    // Detect source language for scan_patterns hint
+    let source_path = source_repo.unwrap_or("../source");
+    let resolved_source = cwd.join(source_path);
+    let detected_lang = lang_preset_name
+        .and_then(presets::find_source_preset)
+        .or_else(|| {
+            if resolved_source.exists() {
+                let detected = presets::detect_source_language(&resolved_source);
+                if let Some(p) = detected {
+                    println!("Detected source language: {}", p.name);
+                }
+                detected
+            } else {
+                None
+            }
+        });
+
+    let _ = detected_lang; // Used in future for scan_patterns in manifest
 
     let manifest = Manifest {
         version: 1,
         source_repo: SourceRepo {
-            path: source_repo.unwrap_or("../source").to_string(),
+            path: source_path.to_string(),
             remote: None,
             default_branch: "main".to_string(),
         },
@@ -217,22 +317,32 @@ fn cmd_init(
     Ok(())
 }
 
-fn scan_pages(pattern: &str, base_dir: &str) -> Result<Vec<Page>, Box<dyn std::error::Error>> {
+fn scan_pages(
+    pattern: &str,
+    base_dir: &str,
+    preset: &presets::SitePreset,
+) -> Result<Vec<Page>, Box<dyn std::error::Error>> {
     let mut pages = Vec::new();
 
     for entry in glob::glob(pattern).map_err(|e| format!("invalid glob pattern: {e}"))? {
         let path = entry?;
         let path_str = path.to_string_lossy().to_string();
 
-        let route = path_str
+        // Strip base dir and extension to get route
+        let relative = path_str
             .strip_prefix(base_dir)
             .unwrap_or(&path_str)
-            .trim_start_matches('/')
-            .replace(".astro", "")
-            .replace(".md", "")
-            .replace(".html", "");
+            .trim_start_matches('/');
+        let route = presets::strip_page_extension(relative, preset);
 
-        let route = if route == "index" {
+        // Handle Next.js app router: page.tsx → parent directory is the route
+        let route = if preset.name == "nextjs-app" {
+            route.replace("/page", "")
+        } else {
+            route
+        };
+
+        let route = if route.is_empty() || route == "index" {
             "/".to_string()
         } else if route.ends_with("/index") {
             format!("/{}", route.strip_suffix("/index").unwrap_or(&route))
@@ -260,19 +370,60 @@ fn scan_pages(pattern: &str, base_dir: &str) -> Result<Vec<Page>, Box<dyn std::e
 
 fn extract_title(path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
-    for line in content.lines() {
+    let mut in_frontmatter = false;
+
+    for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
+
+        // YAML front matter (Hugo, Jekyll, Docusaurus, VitePress, MkDocs)
+        if i == 0 && trimmed == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            if trimmed == "---" {
+                in_frontmatter = false;
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("title:") {
+                let title = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !title.is_empty() {
+                    return Some(title.to_string());
+                }
+            }
+            continue;
+        }
+
+        // Astro/JSX component props
         if let Some(rest) = trimmed.strip_prefix("title=") {
             let title = rest.trim_matches(|c| c == '"' || c == '\'' || c == '{' || c == '}');
             if !title.is_empty() {
                 return Some(title.to_string());
             }
         }
-        if let Some(rest) = trimmed.strip_prefix("title:") {
-            let title = rest.trim().trim_matches(|c| c == '"' || c == '\'');
-            if !title.is_empty() {
-                return Some(title.to_string());
+
+        // TOML front matter (Hugo alternative)
+        if i == 0 && trimmed == "+++" {
+            // TOML front matter — scan for title = "..."
+            for inner in content.lines().skip(1) {
+                let t = inner.trim();
+                if t == "+++" {
+                    break;
+                }
+                if let Some(rest) = t.strip_prefix("title") {
+                    let rest = rest.trim().strip_prefix('=').unwrap_or(rest).trim();
+                    let title = rest.trim_matches(|c| c == '"' || c == '\'');
+                    if !title.is_empty() {
+                        return Some(title.to_string());
+                    }
+                }
             }
+            return None;
+        }
+
+        // Markdown H1 heading as fallback
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            return Some(heading.trim().to_string());
         }
     }
     None
