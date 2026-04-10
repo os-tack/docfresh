@@ -1,4 +1,5 @@
 mod audit;
+mod config;
 mod coverage;
 mod git;
 mod manifest;
@@ -6,6 +7,7 @@ mod presets;
 mod report;
 mod suggest;
 
+use crate::config::Config;
 use crate::manifest::{Manifest, Page, Source, SourceRepo, Status, VerifiedAt};
 use crate::report::Format;
 use chrono::Utc;
@@ -67,6 +69,10 @@ enum Commands {
         #[arg(long)]
         tag: Option<String>,
 
+        /// Maximum stale pages before failure (overrides config)
+        #[arg(long)]
+        max_stale: Option<usize>,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -81,6 +87,14 @@ enum Commands {
         /// Additional file patterns to scan
         #[arg(long)]
         scan: Vec<String>,
+
+        /// Minimum coverage percentage before failure (overrides config)
+        #[arg(long)]
+        min_coverage: Option<usize>,
+
+        /// Fail if any source file is unmapped and not excluded
+        #[arg(long)]
+        fail_on_unmapped: bool,
     },
 
     /// Mark page(s) as verified at current source HEAD
@@ -155,6 +169,25 @@ enum Commands {
         #[arg(long)]
         sections: Vec<String>,
     },
+
+    /// Run audit + coverage with threshold enforcement (designed for CI)
+    Ci {
+        /// Maximum stale pages before failure (overrides config)
+        #[arg(long)]
+        max_stale: Option<usize>,
+
+        /// Minimum coverage percentage (overrides config)
+        #[arg(long)]
+        min_coverage: Option<usize>,
+
+        /// Fail if any unmapped source files exist (overrides config)
+        #[arg(long)]
+        fail_on_unmapped: Option<bool>,
+
+        /// Output format: text, markdown, json (overrides config)
+        #[arg(long)]
+        format: Option<String>,
+    },
 }
 
 fn main() {
@@ -177,8 +210,17 @@ fn main() {
             base_dir.as_deref(),
             *list_presets,
         ),
-        Commands::Audit { tag, json } => cmd_audit(&cli, tag.as_deref(), *json),
-        Commands::Coverage { json, scan } => cmd_coverage(&cli, *json, scan),
+        Commands::Audit {
+            tag,
+            max_stale,
+            json,
+        } => cmd_audit(&cli, tag.as_deref(), *max_stale, *json),
+        Commands::Coverage {
+            json,
+            scan,
+            min_coverage,
+            fail_on_unmapped,
+        } => cmd_coverage(&cli, *json, scan, *min_coverage, *fail_on_unmapped),
         Commands::Verify { route, all, sha } => {
             cmd_verify(&cli, route.as_deref(), *all, sha.as_deref())
         }
@@ -200,6 +242,18 @@ fn main() {
             source,
             sections,
         } => cmd_map(&cli, route, source, sections),
+        Commands::Ci {
+            max_stale,
+            min_coverage,
+            fail_on_unmapped,
+            format,
+        } => cmd_ci(
+            &cli,
+            *max_stale,
+            *min_coverage,
+            *fail_on_unmapped,
+            format.as_deref(),
+        ),
     };
 
     if let Err(e) = result {
@@ -429,20 +483,28 @@ fn extract_title(path: &Path) -> Option<String> {
     None
 }
 
-fn cmd_audit(cli: &Cli, tag: Option<&str>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_audit(
+    cli: &Cli,
+    tag: Option<&str>,
+    max_stale_override: Option<usize>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&cli.manifest)?;
     let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
     let source_repo = resolve_source_repo(cli, &manifest, manifest_dir)?;
+    let config = Config::load(manifest_dir);
 
     let summary = audit::audit_all(&manifest, &source_repo, tag);
     let format = if json { Format::Json } else { Format::Text };
     println!("{}", report::format_audit(&summary, format));
 
-    let has_stale = summary
+    let stale_count = summary
         .results
         .iter()
-        .any(|r| r.new_status == Status::Stale);
-    if has_stale {
+        .filter(|r| r.new_status == Status::Stale)
+        .count();
+    let max_stale = max_stale_override.unwrap_or(config.ci.max_stale);
+    if stale_count > max_stale {
         process::exit(1);
     }
     Ok(())
@@ -452,21 +514,58 @@ fn cmd_coverage(
     cli: &Cli,
     json: bool,
     extra_patterns: &[String],
+    min_coverage_override: Option<usize>,
+    fail_on_unmapped: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&cli.manifest)?;
     let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
     let source_repo = resolve_source_repo(cli, &manifest, manifest_dir)?;
+    let config = Config::load(manifest_dir);
 
-    let mut patterns = coverage::default_scan_patterns();
+    let defaults = coverage::default_scan_patterns();
+    let mut patterns = config.scan_patterns(&defaults);
     let extra_refs: Vec<&str> = extra_patterns
         .iter()
         .map(std::string::String::as_str)
         .collect();
     patterns.extend(extra_refs);
 
-    let report = coverage::compute_coverage(&manifest, &source_repo, &patterns)?;
+    let cov_report = coverage::compute_coverage(&manifest, &source_repo, &patterns)?;
     let format = if json { Format::Json } else { Format::Text };
-    println!("{}", report::format_coverage(&report, format));
+    println!("{}", report::format_coverage(&cov_report, format));
+
+    let mut failed = false;
+
+    // Check minimum coverage threshold
+    let min_cov = min_coverage_override.unwrap_or(config.ci.min_coverage);
+    if min_cov > 0 && cov_report.stats.total_source_files > 0 {
+        let pct = (cov_report.stats.documented_files * 100) / cov_report.stats.total_source_files;
+        if pct < min_cov {
+            eprintln!("coverage {pct}% is below minimum {min_cov}%");
+            failed = true;
+        }
+    }
+
+    // Check for unmapped files
+    let check_unmapped = fail_on_unmapped || config.ci.fail_on_unmapped;
+    if check_unmapped {
+        let excludes = config.exclude_patterns(&manifest.exclude_patterns);
+        let unmapped = filter_excluded(&cov_report.undocumented, &excludes);
+        if !unmapped.is_empty() {
+            eprintln!("{} unmapped source files (not excluded):", unmapped.len());
+            for f in unmapped.iter().take(10) {
+                eprintln!("  {f}");
+            }
+            if unmapped.len() > 10 {
+                eprintln!("  ... and {} more", unmapped.len() - 10);
+            }
+            failed = true;
+        }
+    }
+
+    if failed {
+        process::exit(1);
+    }
     Ok(())
 }
 
@@ -794,6 +893,82 @@ fn cmd_map(
 
     manifest.save(&cli.manifest)?;
     println!("Mapped {source} -> {route}");
+    Ok(())
+}
+
+fn cmd_ci(
+    cli: &Cli,
+    max_stale_override: Option<usize>,
+    min_coverage_override: Option<usize>,
+    fail_on_unmapped_override: Option<bool>,
+    format_override: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = Manifest::load(&cli.manifest)?;
+    let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
+    let source_repo = resolve_source_repo(cli, &manifest, manifest_dir)?;
+    let config = Config::load(manifest_dir);
+
+    let max_stale = max_stale_override.unwrap_or(config.ci.max_stale);
+    let min_coverage = min_coverage_override.unwrap_or(config.ci.min_coverage);
+    let fail_on_unmapped = fail_on_unmapped_override.unwrap_or(config.ci.fail_on_unmapped);
+    let format_str = format_override.unwrap_or(&config.ci.format);
+    let format = match format_str {
+        "json" => Format::Json,
+        "markdown" | "md" => Format::Markdown,
+        _ => Format::Text,
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // 1. Audit
+    let summary = audit::audit_all(&manifest, &source_repo, None);
+    println!("{}", report::format_audit(&summary, format));
+
+    let stale_count = summary
+        .results
+        .iter()
+        .filter(|r| r.new_status == Status::Stale)
+        .count();
+    if stale_count > max_stale {
+        failures.push(format!(
+            "audit: {stale_count} stale pages (max: {max_stale})"
+        ));
+    }
+
+    println!();
+
+    // 2. Coverage
+    let defaults = coverage::default_scan_patterns();
+    let patterns = config.scan_patterns(&defaults);
+    let cov_report = coverage::compute_coverage(&manifest, &source_repo, &patterns)?;
+    println!("{}", report::format_coverage(&cov_report, format));
+
+    if min_coverage > 0 && cov_report.stats.total_source_files > 0 {
+        let pct = (cov_report.stats.documented_files * 100) / cov_report.stats.total_source_files;
+        if pct < min_coverage {
+            failures.push(format!("coverage: {pct}% (min: {min_coverage}%)"));
+        }
+    }
+
+    if fail_on_unmapped {
+        let excludes = config.exclude_patterns(&manifest.exclude_patterns);
+        let unmapped = filter_excluded(&cov_report.undocumented, &excludes);
+        if !unmapped.is_empty() {
+            failures.push(format!("unmapped: {} source files", unmapped.len()));
+        }
+    }
+
+    // 3. Summary
+    if failures.is_empty() {
+        println!("\nCI check passed.");
+    } else {
+        println!();
+        for f in &failures {
+            eprintln!("FAIL: {f}");
+        }
+        process::exit(1);
+    }
+
     Ok(())
 }
 

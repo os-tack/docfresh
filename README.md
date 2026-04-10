@@ -177,6 +177,43 @@ docfresh report --format json          # machine-readable
 - **exclude_patterns** — glob patterns for source files to ignore in `coverage` and `suggest`.
 - **tags** — arbitrary labels for filtering (`docfresh audit --tag reference`).
 
+## Configuration
+
+Create `.docfresh.toml` in your doc site repo to set policy defaults:
+
+```toml
+[source]
+# Extra scan patterns beyond the language preset defaults
+scan = ["tests/**/*.rs", "benches/**/*.rs"]
+# Exclude internal files from coverage and suggest
+exclude = ["src/**/mod.rs", "src/internal/**", "docs/spec/archive/*"]
+
+[ci]
+# Maximum stale pages before audit fails (0 = any stale page fails)
+max_stale = 0
+# Minimum documentation coverage percentage (0 = disabled)
+min_coverage = 20
+# Fail if any source file is unmapped and not excluded
+fail_on_unmapped = true
+# Output format for CI: "text", "markdown", "json"
+format = "markdown"
+```
+
+All settings have CLI flag overrides (`--max-stale`, `--min-coverage`, `--fail-on-unmapped`).
+
+### `docfresh ci`
+
+One command for CI pipelines. Runs audit + coverage with threshold enforcement:
+
+```sh
+docfresh ci                            # uses .docfresh.toml settings
+docfresh ci --max-stale 5              # override: allow up to 5 stale pages
+docfresh ci --fail-on-unmapped true    # override: fail on unmapped files
+docfresh ci --format json              # override: JSON output
+```
+
+Exit code 0 = all checks passed, 1 = threshold violation.
+
 ## CI Integration
 
 ```yaml
@@ -198,11 +235,30 @@ jobs:
           repository: your-org/api-server
           path: api-server
       - run: cargo install docfresh
-      - run: docfresh audit
+      - run: docfresh ci
         env:
           DOCFRESH_SOURCE_REPO: ./api-server
       - run: docfresh report --format markdown >> $GITHUB_STEP_SUMMARY
 ```
+
+### Gate on new source files
+
+When a developer adds a new source file, CI can catch it:
+
+```toml
+# .docfresh.toml
+[source]
+exclude = ["src/**/mod.rs", "src/util/**"]
+
+[ci]
+fail_on_unmapped = true
+max_stale = 3  # allow some staleness during active sprints
+```
+
+The developer either:
+1. Runs `docfresh map /docs/auth src/auth/new_handler.rs` to map it
+2. Adds the file to `exclude` patterns if it's internal
+3. Or CI fails with a clear message listing the unmapped files
 
 ## Supported Frameworks
 
