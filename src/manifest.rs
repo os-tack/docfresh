@@ -122,3 +122,148 @@ impl Manifest {
         self.pages.iter().position(|p| p.route == route)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_manifest() -> Manifest {
+        Manifest {
+            version: 1,
+            source_repo: SourceRepo {
+                path: "../source".to_string(),
+                remote: None,
+                default_branch: "main".to_string(),
+            },
+            exclude_patterns: vec![],
+            pages: vec![
+                Page {
+                    route: "/docs/auth".to_string(),
+                    file: Some("src/pages/docs/auth.astro".to_string()),
+                    title: "Authentication".to_string(),
+                    tags: vec!["reference".to_string()],
+                    sources: vec![Source {
+                        path: "src/auth.rs".to_string(),
+                        sections: vec![],
+                    }],
+                    related: vec!["/docs/permissions".to_string()],
+                    verified_at: Some(VerifiedAt {
+                        sha: "abc1234".to_string(),
+                        timestamp: "2025-01-01T00:00:00Z".to_string(),
+                    }),
+                    status: Status::Current,
+                },
+                Page {
+                    route: "/docs/api".to_string(),
+                    file: None,
+                    title: "API Reference".to_string(),
+                    tags: vec![],
+                    sources: vec![],
+                    related: vec![],
+                    verified_at: None,
+                    status: Status::Missing,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let manifest = sample_manifest();
+        let json = serde_json::to_string_pretty(&manifest).unwrap();
+        let parsed: Manifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.pages.len(), 2);
+        assert_eq!(parsed.pages[0].route, "/docs/auth");
+        assert_eq!(parsed.pages[0].status, Status::Current);
+        assert_eq!(parsed.pages[1].status, Status::Missing);
+    }
+
+    #[test]
+    fn status_display() {
+        assert_eq!(Status::Current.to_string(), "current");
+        assert_eq!(Status::Stale.to_string(), "stale");
+        assert_eq!(Status::Outdated.to_string(), "outdated");
+        assert_eq!(Status::Unverified.to_string(), "unverified");
+        assert_eq!(Status::Missing.to_string(), "missing");
+    }
+
+    #[test]
+    fn status_default_is_unverified() {
+        assert_eq!(Status::default(), Status::Unverified);
+    }
+
+    #[test]
+    fn status_serde_snake_case() {
+        let json = serde_json::to_string(&Status::Current).unwrap();
+        assert_eq!(json, "\"current\"");
+        let parsed: Status = serde_json::from_str("\"stale\"").unwrap();
+        assert_eq!(parsed, Status::Stale);
+    }
+
+    #[test]
+    fn find_page_existing() {
+        let manifest = sample_manifest();
+        assert_eq!(manifest.find_page("/docs/auth"), Some(0));
+        assert_eq!(manifest.find_page("/docs/api"), Some(1));
+    }
+
+    #[test]
+    fn find_page_missing() {
+        let manifest = sample_manifest();
+        assert_eq!(manifest.find_page("/nonexistent"), None);
+    }
+
+    #[test]
+    fn load_rejects_bad_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 99, "source_repo": {"path": "."}, "pages": []}"#,
+        )
+        .unwrap();
+        let result = Manifest::load(&path);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported manifest version"));
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let manifest = sample_manifest();
+        manifest.save(&path).unwrap();
+        let loaded = Manifest::load(&path).unwrap();
+        assert_eq!(loaded.pages.len(), 2);
+        assert_eq!(loaded.pages[0].title, "Authentication");
+        assert_eq!(loaded.source_repo.default_branch, "main");
+    }
+
+    #[test]
+    fn default_branch_defaults_to_main() {
+        let json = r#"{"version": 1, "source_repo": {"path": "."}, "pages": []}"#;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.source_repo.default_branch, "main");
+    }
+
+    #[test]
+    fn exclude_patterns_omitted_when_empty() {
+        let manifest = sample_manifest();
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(!json.contains("exclude_patterns"));
+    }
+
+    #[test]
+    fn sections_omitted_when_empty() {
+        let source = Source {
+            path: "src/lib.rs".to_string(),
+            sections: vec![],
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(!json.contains("sections"));
+    }
+}

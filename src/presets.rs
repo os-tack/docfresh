@@ -297,3 +297,182 @@ pub fn strip_page_extension(filename: &str, preset: &SitePreset) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn find_site_preset_by_name() {
+        assert!(find_site_preset("astro").is_some());
+        assert!(find_site_preset("hugo").is_some());
+        assert!(find_site_preset("nextjs-app").is_some());
+        assert!(find_site_preset("nonexistent").is_none());
+    }
+
+    #[test]
+    fn find_source_preset_by_name() {
+        assert!(find_source_preset("rust").is_some());
+        assert!(find_source_preset("go").is_some());
+        assert!(find_source_preset("python").is_some());
+        assert!(find_source_preset("typescript").is_some());
+        assert!(find_source_preset("nonexistent").is_none());
+    }
+
+    #[test]
+    fn all_presets_have_patterns() {
+        for p in all_site_presets() {
+            assert!(!p.page_patterns.is_empty(), "{} has no patterns", p.name);
+            assert!(!p.base_dir.is_empty(), "{} has no base_dir", p.name);
+        }
+        for p in all_source_presets() {
+            assert!(!p.scan_patterns.is_empty(), "{} has no patterns", p.name);
+        }
+    }
+
+    #[test]
+    fn strip_astro_extension() {
+        assert_eq!(strip_page_extension("docs/auth.astro", &ASTRO), "docs/auth");
+    }
+
+    #[test]
+    fn strip_md_extension() {
+        assert_eq!(
+            strip_page_extension("getting-started.md", &HUGO),
+            "getting-started"
+        );
+    }
+
+    #[test]
+    fn strip_no_match_extension() {
+        assert_eq!(strip_page_extension("file.txt", &ASTRO), "file.txt");
+    }
+
+    #[test]
+    fn detect_astro() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("astro.config.mjs"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "astro");
+    }
+
+    #[test]
+    fn detect_hugo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hugo.toml"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "hugo");
+    }
+
+    #[test]
+    fn detect_mkdocs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("mkdocs.yml"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "mkdocs");
+    }
+
+    #[test]
+    fn detect_docusaurus() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("docusaurus.config.js"), "").unwrap();
+        assert_eq!(
+            detect_site_framework(dir.path()).unwrap().name,
+            "docusaurus"
+        );
+    }
+
+    #[test]
+    fn detect_vitepress() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".vitepress")).unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "vitepress");
+    }
+
+    #[test]
+    fn detect_mdbook() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("book.toml"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "mdbook");
+    }
+
+    #[test]
+    fn detect_jekyll() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("_config.yml"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "jekyll");
+    }
+
+    #[test]
+    fn detect_sphinx() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("conf.py"), "").unwrap();
+        assert_eq!(detect_site_framework(dir.path()).unwrap().name, "sphinx");
+    }
+
+    #[test]
+    fn detect_no_framework() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_site_framework(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detect_rust_source() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        assert_eq!(detect_source_language(dir.path()).unwrap().name, "rust");
+    }
+
+    #[test]
+    fn detect_go_source() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), "").unwrap();
+        assert_eq!(detect_source_language(dir.path()).unwrap().name, "go");
+    }
+
+    #[test]
+    fn detect_python_source() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        assert_eq!(detect_source_language(dir.path()).unwrap().name, "python");
+    }
+
+    #[test]
+    fn detect_typescript_over_javascript() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        fs::write(dir.path().join("tsconfig.json"), "{}").unwrap();
+        assert_eq!(
+            detect_source_language(dir.path()).unwrap().name,
+            "typescript"
+        );
+    }
+
+    #[test]
+    fn detect_javascript_without_tsconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), "{}").unwrap();
+        assert_eq!(
+            detect_source_language(dir.path()).unwrap().name,
+            "javascript"
+        );
+    }
+
+    #[test]
+    fn detect_java_maven() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pom.xml"), "").unwrap();
+        assert_eq!(detect_source_language(dir.path()).unwrap().name, "java");
+    }
+
+    #[test]
+    fn detect_ruby_source() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Gemfile"), "").unwrap();
+        assert_eq!(detect_source_language(dir.path()).unwrap().name, "ruby");
+    }
+
+    #[test]
+    fn detect_no_source_language() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_source_language(dir.path()).is_none());
+    }
+}

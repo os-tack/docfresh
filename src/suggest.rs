@@ -17,7 +17,7 @@ pub struct SuggestReport {
 }
 
 /// Extract terms from a source file for matching against page content.
-fn extract_source_terms(path: &str, repo_path: &Path) -> Vec<String> {
+pub(crate) fn extract_source_terms(path: &str, repo_path: &Path) -> Vec<String> {
     let mut terms = Vec::new();
 
     // Path stem — the most identifying part
@@ -80,7 +80,7 @@ fn extract_source_terms(path: &str, repo_path: &Path) -> Vec<String> {
     terms
 }
 
-fn extract_rust_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_rust_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Public items
@@ -118,7 +118,7 @@ fn extract_rust_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_markdown_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_markdown_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(heading) = trimmed.strip_prefix("# ").or(trimmed.strip_prefix("## ")) {
@@ -134,7 +134,7 @@ fn extract_markdown_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_go_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_go_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Exported functions and types (uppercase first letter)
@@ -168,7 +168,7 @@ fn extract_go_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_python_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_python_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Functions and classes
@@ -199,7 +199,7 @@ fn extract_python_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_typescript_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_typescript_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Exported items
@@ -240,18 +240,14 @@ fn extract_typescript_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_java_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_java_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Public items
         if let Some(rest) = trimmed.strip_prefix("public ") {
-            let rest = rest
-                .strip_prefix("static ")
-                .unwrap_or(rest)
-                .strip_prefix("final ")
-                .unwrap_or(rest)
-                .strip_prefix("abstract ")
-                .unwrap_or(rest);
+            let rest = rest.strip_prefix("static ").unwrap_or(rest);
+            let rest = rest.strip_prefix("final ").unwrap_or(rest);
+            let rest = rest.strip_prefix("abstract ").unwrap_or(rest);
             for keyword in ["class ", "interface ", "enum ", "record "] {
                 if let Some(name_rest) = rest.strip_prefix(keyword) {
                     let name = name_rest
@@ -279,19 +275,14 @@ fn extract_java_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_csharp_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_csharp_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("public ") {
-            let rest = rest
-                .strip_prefix("static ")
-                .unwrap_or(rest)
-                .strip_prefix("sealed ")
-                .unwrap_or(rest)
-                .strip_prefix("abstract ")
-                .unwrap_or(rest)
-                .strip_prefix("partial ")
-                .unwrap_or(rest);
+            let rest = rest.strip_prefix("static ").unwrap_or(rest);
+            let rest = rest.strip_prefix("sealed ").unwrap_or(rest);
+            let rest = rest.strip_prefix("abstract ").unwrap_or(rest);
+            let rest = rest.strip_prefix("partial ").unwrap_or(rest);
             for keyword in ["class ", "interface ", "enum ", "struct ", "record "] {
                 if let Some(name_rest) = rest.strip_prefix(keyword) {
                     let name = name_rest
@@ -322,7 +313,7 @@ fn extract_csharp_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_ruby_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_ruby_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         for prefix in ["def ", "class ", "module "] {
@@ -351,7 +342,7 @@ fn extract_ruby_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_php_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_php_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed
@@ -401,7 +392,7 @@ fn extract_php_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_cpp_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_cpp_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
         // Class and struct declarations
@@ -446,7 +437,7 @@ fn extract_doc_words(doc: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn split_camel_case(s: &str) -> Vec<String> {
+pub(crate) fn split_camel_case(s: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
     for c in s.chars() {
@@ -489,7 +480,7 @@ fn extract_page_terms(page_file: &str, route: &str, site_dir: &Path) -> Vec<Stri
     terms
 }
 
-fn extract_page_content_terms(content: &str, terms: &mut Vec<String>) {
+pub(crate) fn extract_page_content_terms(content: &str, terms: &mut Vec<String>) {
     for line in content.lines() {
         let trimmed = line.trim();
 
@@ -541,7 +532,7 @@ fn extract_page_content_terms(content: &str, terms: &mut Vec<String>) {
     }
 }
 
-fn extract_tag_text(line: &str, tag: &str) -> Option<String> {
+pub(crate) fn extract_tag_text(line: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
     if let Some(start_idx) = line.find(&open) {
@@ -559,7 +550,7 @@ fn extract_tag_text(line: &str, tag: &str) -> Option<String> {
 
 /// Score how well a source file matches a page.
 /// Returns (score, reasons).
-fn score_match(
+pub(crate) fn score_match(
     source_path: &str,
     source_terms: &[String],
     page_terms: &[String],
@@ -672,5 +663,362 @@ pub fn suggest_mappings(
     SuggestReport {
         suggestions,
         no_match,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── split_camel_case ────────────────────────────────────────────
+
+    #[test]
+    fn camel_case_simple() {
+        assert_eq!(split_camel_case("HelloWorld"), vec!["Hello", "World"]);
+    }
+
+    #[test]
+    fn camel_case_single_word() {
+        assert_eq!(split_camel_case("hello"), vec!["hello"]);
+    }
+
+    #[test]
+    fn camel_case_multiple() {
+        assert_eq!(split_camel_case("MyBigStruct"), vec!["My", "Big", "Struct"]);
+    }
+
+    #[test]
+    fn camel_case_empty() {
+        let result: Vec<String> = split_camel_case("");
+        assert!(result.is_empty());
+    }
+
+    // ── extract_rust_terms ──────────────────────────────────────────
+
+    #[test]
+    fn rust_pub_fn() {
+        let mut terms = Vec::new();
+        extract_rust_terms(
+            "pub fn authenticate_user(req: &Request) -> bool {",
+            &mut terms,
+        );
+        assert!(terms.contains(&"authenticate_user".to_string()));
+    }
+
+    #[test]
+    fn rust_pub_struct() {
+        let mut terms = Vec::new();
+        extract_rust_terms("pub struct AuthConfig {", &mut terms);
+        assert!(terms.contains(&"authconfig".to_string()));
+        assert!(terms.contains(&"auth".to_string()));
+        assert!(terms.contains(&"config".to_string()));
+    }
+
+    #[test]
+    fn rust_doc_comment() {
+        let mut terms = Vec::new();
+        extract_rust_terms(
+            "/// Verify the authentication token against the store",
+            &mut terms,
+        );
+        assert!(terms.contains(&"verify".to_string()));
+        assert!(terms.contains(&"authentication".to_string()));
+        assert!(terms.contains(&"token".to_string()));
+    }
+
+    #[test]
+    fn rust_skips_short_names() {
+        let mut terms = Vec::new();
+        extract_rust_terms("pub fn ok() -> bool {", &mut terms);
+        assert!(!terms.contains(&"ok".to_string()));
+    }
+
+    // ── extract_go_terms ────────────────────────────────────────────
+
+    #[test]
+    fn go_exported_func() {
+        let mut terms = Vec::new();
+        extract_go_terms(
+            "func HandleRequest(w http.ResponseWriter, r *http.Request) {",
+            &mut terms,
+        );
+        assert!(terms.contains(&"handlerequest".to_string()));
+        assert!(terms.contains(&"handle".to_string()));
+        assert!(terms.contains(&"request".to_string()));
+    }
+
+    #[test]
+    fn go_exported_type() {
+        let mut terms = Vec::new();
+        extract_go_terms("type AuthMiddleware struct {", &mut terms);
+        assert!(terms.contains(&"authmiddleware".to_string()));
+    }
+
+    #[test]
+    fn go_skips_unexported() {
+        let mut terms = Vec::new();
+        extract_go_terms("func handleInternal(ctx context.Context) {", &mut terms);
+        // "handleInternal" starts with lowercase, should be skipped
+        assert!(!terms.contains(&"handleinternal".to_string()));
+    }
+
+    #[test]
+    fn go_method_receiver() {
+        let mut terms = Vec::new();
+        extract_go_terms("func (s *Server) ListenAndServe() error {", &mut terms);
+        assert!(terms.contains(&"listenandserve".to_string()));
+    }
+
+    // ── extract_python_terms ────────────────────────────────────────
+
+    #[test]
+    fn python_class() {
+        let mut terms = Vec::new();
+        extract_python_terms("class UserAuthentication:", &mut terms);
+        assert!(terms.contains(&"userauthentication".to_string()));
+    }
+
+    #[test]
+    fn python_function() {
+        let mut terms = Vec::new();
+        extract_python_terms("def validate_token(token: str) -> bool:", &mut terms);
+        assert!(terms.contains(&"validate_token".to_string()));
+        assert!(terms.contains(&"validate".to_string()));
+        assert!(terms.contains(&"token".to_string()));
+    }
+
+    #[test]
+    fn python_skips_private() {
+        let mut terms = Vec::new();
+        extract_python_terms("def _internal_helper():", &mut terms);
+        assert!(!terms.contains(&"_internal_helper".to_string()));
+    }
+
+    #[test]
+    fn python_docstring() {
+        let mut terms = Vec::new();
+        extract_python_terms(
+            r#""""Authenticate against the backend service""""#,
+            &mut terms,
+        );
+        assert!(terms.contains(&"authenticate".to_string()));
+        assert!(terms.contains(&"backend".to_string()));
+        assert!(terms.contains(&"service".to_string()));
+    }
+
+    // ── extract_typescript_terms ─────────────────────────────────────
+
+    #[test]
+    fn ts_export_function() {
+        let mut terms = Vec::new();
+        extract_typescript_terms(
+            "export function createAuthMiddleware(config: AuthConfig): Middleware {",
+            &mut terms,
+        );
+        assert!(terms.contains(&"createauthmiddleware".to_string()));
+        assert!(terms.contains(&"create".to_string()));
+    }
+
+    #[test]
+    fn ts_export_interface() {
+        let mut terms = Vec::new();
+        extract_typescript_terms("export interface UserProfile {", &mut terms);
+        assert!(terms.contains(&"userprofile".to_string()));
+        assert!(terms.contains(&"user".to_string()));
+        assert!(terms.contains(&"profile".to_string()));
+    }
+
+    #[test]
+    fn ts_export_const() {
+        let mut terms = Vec::new();
+        extract_typescript_terms("export const DEFAULT_TIMEOUT = 5000;", &mut terms);
+        assert!(terms.contains(&"default_timeout".to_string()));
+    }
+
+    #[test]
+    fn ts_export_async_function() {
+        let mut terms = Vec::new();
+        extract_typescript_terms(
+            "export async function fetchUserData(id: string): Promise<User> {",
+            &mut terms,
+        );
+        assert!(terms.contains(&"fetchuserdata".to_string()));
+    }
+
+    #[test]
+    fn ts_jsdoc() {
+        let mut terms = Vec::new();
+        extract_typescript_terms("/** Validates the authentication token */", &mut terms);
+        assert!(terms.contains(&"validates".to_string()));
+        assert!(terms.contains(&"authentication".to_string()));
+    }
+
+    #[test]
+    fn ts_jsdoc_skips_annotations() {
+        let mut terms = Vec::new();
+        extract_typescript_terms("* @param token - the bearer token", &mut terms);
+        assert!(terms.is_empty());
+    }
+
+    // ── extract_java_terms ──────────────────────────────────────────
+
+    #[test]
+    fn java_public_class() {
+        let mut terms = Vec::new();
+        extract_java_terms("public class AuthenticationService {", &mut terms);
+        assert!(terms.contains(&"authenticationservice".to_string()));
+        assert!(terms.contains(&"authentication".to_string()));
+        assert!(terms.contains(&"service".to_string()));
+    }
+
+    #[test]
+    fn java_public_interface() {
+        let mut terms = Vec::new();
+        extract_java_terms("public interface TokenValidator {", &mut terms);
+        assert!(terms.contains(&"tokenvalidator".to_string()));
+    }
+
+    #[test]
+    fn java_static_final() {
+        let mut terms = Vec::new();
+        extract_java_terms("public static final class SecurityConfig {", &mut terms);
+        assert!(terms.contains(&"securityconfig".to_string()));
+    }
+
+    // ── extract_markdown_terms ──────────────────────────────────────
+
+    #[test]
+    fn markdown_h1() {
+        let mut terms = Vec::new();
+        extract_markdown_terms("# Authentication Guide", &mut terms);
+        assert!(terms.contains(&"authentication".to_string()));
+        assert!(terms.contains(&"guide".to_string()));
+    }
+
+    #[test]
+    fn markdown_h2() {
+        let mut terms = Vec::new();
+        extract_markdown_terms("## Token Validation", &mut terms);
+        assert!(terms.contains(&"token".to_string()));
+        assert!(terms.contains(&"validation".to_string()));
+    }
+
+    // ── extract_page_content_terms ──────────────────────────────────
+
+    #[test]
+    fn page_content_source_paths() {
+        let mut terms = Vec::new();
+        extract_page_content_terms("See src/commands/bail.rs for details", &mut terms);
+        assert!(terms.contains(&"bail".to_string()));
+    }
+
+    #[test]
+    fn page_content_html_tags() {
+        let mut terms = Vec::new();
+        extract_page_content_terms("<h2>Secret Management</h2>", &mut terms);
+        assert!(terms.contains(&"secret".to_string()));
+        assert!(terms.contains(&"management".to_string()));
+    }
+
+    #[test]
+    fn page_content_inline_code() {
+        let mut terms = Vec::new();
+        extract_page_content_terms("Use `bail` to pack and `unpack` to restore", &mut terms);
+        assert!(terms.contains(&"bail".to_string()));
+        assert!(terms.contains(&"unpack".to_string()));
+    }
+
+    #[test]
+    fn page_content_inline_code_rejects_multiword() {
+        let mut terms = Vec::new();
+        extract_page_content_terms("Run `bail pack --verify` to create", &mut terms);
+        // Multi-word backtick spans with spaces are rejected
+        assert!(!terms.contains(&"bail pack --verify".to_string()));
+    }
+
+    #[test]
+    fn page_content_h3_with_attrs() {
+        let mut terms = Vec::new();
+        extract_page_content_terms(r#"<h3 id="trust-tiers">Trust Tiers</h3>"#, &mut terms);
+        assert!(terms.contains(&"trust".to_string()));
+        assert!(terms.contains(&"tiers".to_string()));
+    }
+
+    // ── extract_tag_text ────────────────────────────────────────────
+
+    #[test]
+    fn tag_text_simple() {
+        assert_eq!(
+            extract_tag_text("<h2>Hello World</h2>", "h2"),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn tag_text_with_attrs() {
+        assert_eq!(
+            extract_tag_text(r#"<h2 class="title">Hello</h2>"#, "h2"),
+            Some("Hello".to_string())
+        );
+    }
+
+    #[test]
+    fn tag_text_no_match() {
+        assert_eq!(extract_tag_text("<p>Hello</p>", "h2"), None);
+    }
+
+    #[test]
+    fn tag_text_unclosed() {
+        assert_eq!(extract_tag_text("<h2>Hello", "h2"), None);
+    }
+
+    // ── score_match ─────────────────────────────────────────────────
+
+    #[test]
+    fn score_stem_match() {
+        let (score, reasons) = score_match(
+            "src/commands/bail.rs",
+            &["bail".to_string(), "pack".to_string()],
+            &[
+                "bail".to_string(),
+                "commands".to_string(),
+                "reference".to_string(),
+            ],
+        );
+        assert!(
+            score >= 0.6,
+            "stem match should score at least 0.6, got {score}"
+        );
+        assert!(reasons.iter().any(|r| r.contains("bail")));
+    }
+
+    #[test]
+    fn score_no_match() {
+        let (score, _) = score_match(
+            "src/kernel/pty.rs",
+            &["pty".to_string(), "terminal".to_string()],
+            &["authentication".to_string(), "oauth".to_string()],
+        );
+        assert!(score < 0.1, "no overlap should score near 0, got {score}");
+    }
+
+    #[test]
+    fn score_term_overlap_only() {
+        let (score, reasons) = score_match(
+            "src/kernel/memory.rs",
+            &[
+                "memory".to_string(),
+                "context".to_string(),
+                "pressure".to_string(),
+            ],
+            &[
+                "context".to_string(),
+                "pressure".to_string(),
+                "window".to_string(),
+            ],
+        );
+        // No stem match (page doesn't contain "memory"), but 2/3 term overlap
+        assert!(score > 0.0);
+        assert!(reasons.iter().any(|r| r.contains("shared terms")));
     }
 }
