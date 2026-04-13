@@ -1,3 +1,4 @@
+use crate::concepts::{self, ConceptCoverageStats, OrphanConcept};
 use crate::manifest::Manifest;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -8,6 +9,7 @@ pub struct CoverageReport {
     pub orphan_pages: Vec<OrphanPage>,
     pub shared_sources: Vec<SharedSource>,
     pub stats: CoverageStats,
+    pub concept_stats: Option<ConceptCoverageStats>,
 }
 
 pub struct OrphanPage {
@@ -114,11 +116,60 @@ pub fn compute_coverage(
         orphan_pages: orphan_pages.len(),
     };
 
+    let documented_files: Vec<String> = documented.iter().cloned().collect();
+    let concept_stats = compute_concept_coverage(manifest, source_repo, &documented_files);
+
     Ok(CoverageReport {
         undocumented,
         orphan_pages,
         shared_sources,
         stats,
+        concept_stats,
+    })
+}
+
+fn compute_concept_coverage(
+    manifest: &Manifest,
+    source_repo: &Path,
+    documented_files: &[String],
+) -> Option<ConceptCoverageStats> {
+    let all_concepts = concepts::extract_all_concepts(documented_files, source_repo);
+    if all_concepts.is_empty() {
+        return None;
+    }
+
+    let mut covered_names: HashSet<String> = HashSet::new();
+    for page in &manifest.pages {
+        let Some(file) = &page.file else {
+            continue;
+        };
+        if let Ok(content) = std::fs::read_to_string(Path::new(file)) {
+            for name in concepts::scan_page_for_concepts(&content, &all_concepts) {
+                covered_names.insert(name);
+            }
+        }
+    }
+
+    let total = all_concepts.len();
+    let covered = all_concepts
+        .iter()
+        .filter(|c| covered_names.contains(&c.name))
+        .count();
+
+    let orphan_list: Vec<OrphanConcept> = all_concepts
+        .iter()
+        .filter(|c| !covered_names.contains(&c.name))
+        .map(|c| OrphanConcept {
+            name: c.name.clone(),
+            kind: c.kind.to_string(),
+            source_file: c.source_file.clone(),
+        })
+        .collect();
+
+    Some(ConceptCoverageStats {
+        total,
+        covered,
+        orphans: orphan_list,
     })
 }
 
@@ -136,9 +187,15 @@ fn scan_source_files(
     let mut all_files = Vec::new();
 
     for pattern in patterns {
-        // Use git ls-files to respect .gitignore and get tracked files
+        // Use git ls-files to respect .gitignore and get tracked files.
+        // Prefix with :(glob) so ** patterns work correctly across git versions.
+        let pathspec = if pattern.contains("**") {
+            format!(":(glob){pattern}")
+        } else {
+            (*pattern).to_string()
+        };
         let output = Command::new("git")
-            .args(["ls-files", pattern])
+            .args(["ls-files", &pathspec])
             .current_dir(repo_path)
             .output()?;
         if output.status.success() {

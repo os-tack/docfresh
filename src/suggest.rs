@@ -1,3 +1,4 @@
+use crate::embeddings::EmbeddingCache;
 use crate::manifest::Manifest;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -548,12 +549,26 @@ pub(crate) fn extract_tag_text(line: &str, tag: &str) -> Option<String> {
     None
 }
 
-/// Score how well a source file matches a page.
+/// Score how well a source file matches a page (without embeddings).
 /// Returns (score, reasons).
+#[cfg(test)]
 pub(crate) fn score_match(
     source_path: &str,
     source_terms: &[String],
     page_terms: &[String],
+) -> (f64, Vec<String>) {
+    score_match_with_embeddings(source_path, source_terms, page_terms, None, None)
+}
+
+/// Score with optional embedding similarity boost.
+/// When `embedding_cache` is Some, term overlap weight drops from 0.4 to 0.3
+/// and embedding similarity gets 0.3 weight.
+pub(crate) fn score_match_with_embeddings(
+    source_path: &str,
+    source_terms: &[String],
+    page_terms: &[String],
+    page_text: Option<&str>,
+    embedding_cache: Option<&mut EmbeddingCache>,
 ) -> (f64, Vec<String>) {
     let mut score = 0.0;
     let mut reasons = Vec::new();
@@ -573,7 +588,11 @@ pub(crate) fn score_match(
     // Tier 2: parent directory match (e.g., source in squasher/, page about compression)
     // This is captured by term overlap below.
 
-    // Tier 3: term overlap
+    // Determine term overlap weight based on whether embeddings are active
+    let use_embeddings = embedding_cache.is_some();
+    let term_weight = if use_embeddings { 0.3 } else { 0.4 };
+
+    // Term overlap
     if !source_terms.is_empty() {
         let matched: Vec<&String> = source_terms
             .iter()
@@ -581,7 +600,7 @@ pub(crate) fn score_match(
             .collect();
         let overlap = matched.len() as f64 / source_terms.len() as f64;
         if overlap > 0.0 {
-            score += overlap * 0.4;
+            score += overlap * term_weight;
             if matched.len() <= 5 {
                 let matched_strs: Vec<&str> = matched.iter().map(|s| s.as_str()).collect();
                 reasons.push(format!("shared terms: {}", matched_strs.join(", ")));
@@ -591,22 +610,45 @@ pub(crate) fn score_match(
         }
     }
 
+    // Embedding similarity (tier 3, only when cache provided)
+    if let Some(cache) = embedding_cache {
+        if let Some(page_desc) = page_text {
+            let source_text = source_terms.join(" ");
+            if !source_text.is_empty() && !page_desc.is_empty() {
+                if let (Ok(src_emb), Ok(page_emb)) =
+                    (cache.embed(&source_text), cache.embed(page_desc))
+                {
+                    let sim = f64::from(EmbeddingCache::similarity(&src_emb, &page_emb));
+                    if sim > 0.0 {
+                        score += sim * 0.3;
+                        reasons.push(format!("embedding similarity: {:.0}%", sim * 100.0));
+                    }
+                }
+            }
+        }
+    }
+
     (score, reasons)
 }
 
-pub fn suggest_mappings(
+pub fn suggest_mappings_with_embeddings(
     manifest: &Manifest,
     source_repo: &Path,
     site_dir: &Path,
     source_files: &[String],
     min_confidence: f64,
+    mut embedding_cache: Option<&mut EmbeddingCache>,
 ) -> SuggestReport {
-    // Build page term index
+    // Build page term index and page text for embeddings
     let mut page_terms: HashMap<String, Vec<String>> = HashMap::new();
+    let mut page_texts: HashMap<String, String> = HashMap::new();
     for page in &manifest.pages {
         if let Some(file) = &page.file {
             let terms = extract_page_terms(file, &page.route, site_dir);
             page_terms.insert(page.route.clone(), terms);
+            // Build embedding text from page title + route
+            let emb_text = format!("{} {}", page.title, page.route.replace('/', " "));
+            page_texts.insert(page.route.clone(), emb_text);
         }
     }
 
@@ -631,7 +673,14 @@ pub fn suggest_mappings(
         // Score against all pages
         let mut best_matches: Vec<(String, f64, Vec<String>)> = Vec::new();
         for (route, p_terms) in &page_terms {
-            let (score, reasons) = score_match(source_file, &source_terms, p_terms);
+            let page_text = page_texts.get(route).map(String::as_str);
+            let (score, reasons) = score_match_with_embeddings(
+                source_file,
+                &source_terms,
+                p_terms,
+                page_text,
+                embedding_cache.as_deref_mut(),
+            );
             if score >= min_confidence {
                 best_matches.push((route.clone(), score, reasons));
             }

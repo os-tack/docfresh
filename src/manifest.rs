@@ -40,6 +40,8 @@ pub struct Page {
     pub verified_at: Option<VerifiedAt>,
     #[serde(default)]
     pub status: Status,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concepts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,6 +154,7 @@ mod tests {
                         timestamp: "2025-01-01T00:00:00Z".to_string(),
                     }),
                     status: Status::Current,
+                    concepts: vec![],
                 },
                 Page {
                     route: "/docs/api".to_string(),
@@ -162,6 +165,7 @@ mod tests {
                     related: vec![],
                     verified_at: None,
                     status: Status::Missing,
+                    concepts: vec![],
                 },
             ],
         }

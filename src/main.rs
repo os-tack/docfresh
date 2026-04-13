@@ -1,6 +1,9 @@
 mod audit;
+mod concept_graph;
+mod concepts;
 mod config;
 mod coverage;
+mod embeddings;
 mod git;
 mod manifest;
 mod presets;
@@ -155,6 +158,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Use embedding similarity for improved matching (requires ostk)
+        #[arg(long)]
+        embeddings: bool,
     },
 
     /// Add a source mapping to a page
@@ -168,6 +175,21 @@ enum Commands {
         /// Optional section markers
         #[arg(long)]
         sections: Vec<String>,
+    },
+
+    /// Show concept graph: orphans, thin coverage, stale siblings
+    Concepts {
+        /// Output as DOT (graphviz)
+        #[arg(long)]
+        dot: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Additional file patterns to scan
+        #[arg(long)]
+        scan: Vec<String>,
     },
 
     /// Run audit + coverage with threshold enforcement (designed for CI)
@@ -236,12 +258,14 @@ fn main() {
             apply,
             file,
             json,
-        } => cmd_suggest(&cli, *min_confidence, *apply, file.as_deref(), *json),
+            embeddings,
+        } => cmd_suggest(&cli, *min_confidence, *apply, file.as_deref(), *json, *embeddings),
         Commands::Map {
             route,
             source,
             sections,
         } => cmd_map(&cli, route, source, sections),
+        Commands::Concepts { dot, json, scan } => cmd_concepts(&cli, *dot, *json, scan),
         Commands::Ci {
             max_stale,
             min_coverage,
@@ -416,6 +440,7 @@ fn scan_pages(
             related: vec![],
             verified_at: None,
             status: Status::Unverified,
+            concepts: vec![],
         });
     }
 
@@ -732,6 +757,7 @@ fn cmd_suggest(
     apply_threshold: Option<f64>,
     file_filter: Option<&str>,
     json: bool,
+    use_embeddings: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest = Manifest::load(&cli.manifest)?;
     let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
@@ -747,12 +773,27 @@ fn cmd_suggest(
         filter_excluded(&all_files, &manifest.exclude_patterns)
     };
 
-    let report = suggest::suggest_mappings(
+    // Set up embedding cache if requested
+    let mut cache = embeddings::EmbeddingCache::new();
+    let embedding_cache = if use_embeddings {
+        if cache.is_available() {
+            eprintln!("Using embedding similarity (ostk embeddings)");
+            Some(&mut cache)
+        } else {
+            eprintln!("Warning: ostk not found, falling back to term-only scoring");
+            None
+        }
+    } else {
+        None
+    };
+
+    let report = suggest::suggest_mappings_with_embeddings(
         &manifest,
         &source_repo,
         manifest_dir,
         &source_files,
         min_confidence,
+        embedding_cache,
     );
 
     if json {
@@ -894,6 +935,36 @@ fn cmd_map(
 
     manifest.save(&cli.manifest)?;
     println!("Mapped {source} -> {route}");
+    Ok(())
+}
+
+fn cmd_concepts(
+    cli: &Cli,
+    dot: bool,
+    json: bool,
+    extra_patterns: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = Manifest::load(&cli.manifest)?;
+    let manifest_dir = cli.manifest.parent().unwrap_or(Path::new("."));
+    let source_repo = resolve_source_repo(cli, &manifest, manifest_dir)?;
+    let config = Config::load(manifest_dir);
+
+    let defaults = coverage::default_scan_patterns();
+    let mut patterns = config.scan_patterns(&defaults);
+    let extra_refs: Vec<&str> = extra_patterns.iter().map(String::as_str).collect();
+    patterns.extend(extra_refs);
+
+    let graph = concept_graph::build_graph(&manifest, &source_repo, &patterns, Some(manifest_dir))?;
+
+    let output = if dot {
+        report::format_concept_graph_dot(&graph)
+    } else if json {
+        report::format_concept_graph_json(&graph)
+    } else {
+        report::format_concept_graph_text(&graph)
+    };
+
+    println!("{output}");
     Ok(())
 }
 

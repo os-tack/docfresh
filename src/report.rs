@@ -1,4 +1,5 @@
 use crate::audit::AuditSummary;
+use crate::concept_graph::ConceptGraph;
 use crate::coverage::CoverageReport;
 use crate::manifest::{Manifest, Status};
 use colored::Colorize;
@@ -304,6 +305,19 @@ fn format_coverage_text(report: &CoverageReport) -> String {
             100.0
         }
     ));
+
+    if let Some(cs) = &report.concept_stats {
+        let pct = if cs.total > 0 {
+            (cs.covered as f64 / cs.total as f64) * 100.0
+        } else {
+            100.0
+        };
+        lines.push(format!(
+            "Concepts: {}/{} covered ({:.0}%)",
+            cs.covered, cs.total, pct
+        ));
+    }
+
     lines.push(format!(
         "Pages: {}/{} have source mappings",
         s.pages_with_sources, s.total_pages
@@ -344,12 +358,66 @@ fn format_coverage_text(report: &CoverageReport) -> String {
         for s in &report.shared_sources {
             lines.push(format!("  {} ({})", s.path, s.pages.join(", ")));
         }
+        lines.push(String::new());
+    }
+
+    if let Some(cs) = &report.concept_stats {
+        if !cs.orphans.is_empty() {
+            lines.push(format!(
+                "{}",
+                format!("ORPHAN CONCEPTS ({}):", cs.orphans.len())
+                    .yellow()
+                    .bold()
+            ));
+            // Group orphans by source file
+            let mut by_file: std::collections::BTreeMap<&str, Vec<&crate::concepts::OrphanConcept>> =
+                std::collections::BTreeMap::new();
+            for oc in &cs.orphans {
+                by_file.entry(&oc.source_file).or_default().push(oc);
+            }
+            for (file, orphans) in &by_file {
+                lines.push(format!("  {file}:"));
+                for oc in orphans {
+                    lines.push(format!("    {} ({})", oc.name, oc.kind));
+                }
+            }
+            lines.push(String::new());
+        }
+
+        let orphan_count = cs.orphans.len();
+        let source_files: std::collections::HashSet<&str> = cs
+            .orphans
+            .iter()
+            .map(|c| c.source_file.as_str())
+            .collect();
+        // Count unique source files across all concepts, not just orphans
+        lines.push(format!(
+            "{} concepts in {} source files; {} covered by docs, {} orphaned",
+            cs.total,
+            source_files.len(),
+            cs.covered,
+            orphan_count,
+        ));
     }
 
     lines.join("\n")
 }
 
 fn format_coverage_json(report: &CoverageReport) -> String {
+    let concept_stats = report.concept_stats.as_ref().map(|cs| {
+        serde_json::json!({
+            "total_concepts": cs.total,
+            "covered_concepts": cs.covered,
+            "orphan_concepts": cs.orphans.iter().map(|oc| {
+                serde_json::json!({
+                    "name": oc.name,
+                    "kind": oc.kind,
+                    "source_file": oc.source_file,
+                })
+            }).collect::<Vec<_>>(),
+        })
+    });
+
     let output = serde_json::json!({
         "stats": {
             "total_source_files": report.stats.total_source_files,
@@ -359,6 +427,7 @@ fn format_coverage_json(report: &CoverageReport) -> String {
             "pages_with_sources": report.stats.pages_with_sources,
             "orphan_pages": report.stats.orphan_pages,
         },
+        "concept_stats": concept_stats,
         "undocumented": report.undocumented,
         "orphan_pages": report.orphan_pages.iter().map(|o| {
             serde_json::json!({"route": o.route, "reason": o.reason})
@@ -386,6 +455,18 @@ fn format_coverage_markdown(report: &CoverageReport) -> String {
             100.0
         }
     ));
+    if let Some(cs) = &report.concept_stats {
+        let pct = if cs.total > 0 {
+            (cs.covered as f64 / cs.total as f64) * 100.0
+        } else {
+            100.0
+        };
+        lines.push(format!(
+            "- **{}/{}** concepts covered ({:.0}%)",
+            cs.covered, cs.total, pct
+        ));
+    }
+
     lines.push(format!(
         "- **{}/{}** pages have source mappings",
         s.pages_with_sources, s.total_pages
@@ -400,6 +481,23 @@ fn format_coverage_markdown(report: &CoverageReport) -> String {
         lines.push(String::new());
         for f in &report.undocumented {
             lines.push(format!("- `{f}`"));
+        }
+    }
+
+    if let Some(cs) = &report.concept_stats {
+        if !cs.orphans.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "### Orphan Concepts ({})",
+                cs.orphans.len()
+            ));
+            lines.push(String::new());
+            for oc in &cs.orphans {
+                lines.push(format!(
+                    "- `{}` ({}) in `{}`",
+                    oc.name, oc.kind, oc.source_file
+                ));
+            }
         }
     }
 
@@ -485,4 +583,149 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}...", &s[..max - 3])
     }
+}
+
+pub fn format_concept_graph_text(graph: &ConceptGraph) -> String {
+    let mut lines = Vec::new();
+    let s = &graph.stats;
+
+    lines.push(format!(
+        "Concept Graph: {} concepts across {} pages",
+        s.total_concepts, s.total_pages
+    ));
+    lines.push(format!(
+        "  Orphans: {}  Thin coverage: {}  Stale siblings: {}",
+        s.orphan_count, s.thin_coverage_count, s.stale_sibling_count
+    ));
+    lines.push(String::new());
+
+    if !graph.orphans.is_empty() {
+        lines.push(format!(
+            "{}",
+            format!("ORPHAN CONCEPTS ({}):", graph.orphans.len())
+                .red()
+                .bold()
+        ));
+        for o in &graph.orphans {
+            lines.push(format!("  {} ({}) in {}", o.name, o.kind, o.source_file));
+        }
+        lines.push(String::new());
+    }
+
+    if !graph.thin_coverage.is_empty() {
+        lines.push(format!(
+            "{}",
+            format!("THIN COVERAGE ({}):", graph.thin_coverage.len())
+                .yellow()
+                .bold()
+        ));
+        for t in &graph.thin_coverage {
+            lines.push(format!(
+                "  {} <- {} missing: {}",
+                t.route,
+                t.source_file,
+                t.missing_concepts.join(", ")
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    if !graph.stale_siblings.is_empty() {
+        lines.push(format!(
+            "{}",
+            format!("STALE SIBLINGS ({}):", graph.stale_siblings.len())
+                .yellow()
+                .bold()
+        ));
+        for s in &graph.stale_siblings {
+            lines.push(format!("  concept: {}", s.concept));
+            for (route, sha) in &s.pages {
+                let sha_str = sha.as_deref().unwrap_or("unverified");
+                lines.push(format!("    {route} @ {sha_str}"));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    if graph.orphans.is_empty()
+        && graph.thin_coverage.is_empty()
+        && graph.stale_siblings.is_empty()
+    {
+        lines.push("All concepts are documented with full coverage.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+pub fn format_concept_graph_json(graph: &ConceptGraph) -> String {
+    serde_json::to_string_pretty(graph).unwrap_or_default()
+}
+
+pub fn format_concept_graph_dot(graph: &ConceptGraph) -> String {
+    let mut lines = vec![
+        "digraph concepts {".to_string(),
+        "  rankdir=LR;".to_string(),
+        "  node [fontname=\"Helvetica\"];".to_string(),
+        String::new(),
+    ];
+
+    // Collect orphan names for highlighting
+    let orphan_names: std::collections::HashSet<&str> =
+        graph.orphans.iter().map(|o| o.name.as_str()).collect();
+
+    // Collect all unique page routes used by nodes
+    let mut page_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for node in &graph.nodes {
+        for page in &node.pages {
+            page_set.insert(page.as_str());
+        }
+    }
+
+    // Page nodes (boxes)
+    lines.push("  // Pages".to_string());
+    for page in &page_set {
+        let id = dot_id(page);
+        lines.push(format!("  {id} [label=\"{page}\", shape=box];"));
+    }
+    lines.push(String::new());
+
+    // Concept nodes (circles), orphans in red
+    lines.push("  // Concepts".to_string());
+    for node in &graph.nodes {
+        let id = dot_id(&node.name);
+        if orphan_names.contains(node.name.as_str()) {
+            lines.push(format!(
+                "  {id} [label=\"{}\", shape=circle, color=red, fontcolor=red];",
+                node.name
+            ));
+        } else {
+            lines.push(format!(
+                "  {id} [label=\"{}\", shape=circle];",
+                node.name
+            ));
+        }
+    }
+    lines.push(String::new());
+
+    // Edges: concept -> page
+    lines.push("  // Edges".to_string());
+    for node in &graph.nodes {
+        let concept_id = dot_id(&node.name);
+        for page in &node.pages {
+            let page_id = dot_id(page);
+            lines.push(format!("  {concept_id} -> {page_id};"));
+        }
+    }
+
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+/// Convert a string to a valid DOT node identifier.
+fn dot_id(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("n_{cleaned}")
 }
