@@ -1,7 +1,29 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::suggest::split_camel_case;
+/// Common names that appear everywhere and carry no semantic value as concepts.
+const CONCEPT_STOPLIST: &[&str] = &[
+    "new", "run", "fmt", "display", "default", "from", "into", "try_from",
+    "error", "result", "build", "init", "drop", "clone", "debug", "serialize",
+    "deserialize", "write", "read", "flush", "close", "open", "get", "set",
+    "len", "is_empty", "iter", "next", "map", "filter", "collect", "push",
+    "pop", "insert", "remove", "contains", "main", "test", "setup", "handle",
+    "process", "update", "create", "delete", "list", "show", "help", "status",
+    "config", "context", "state", "data", "info", "value", "entry", "item",
+    "node", "path", "name", "kind", "type", "mode", "level", "action",
+    "format", "parse", "load", "save", "start", "stop", "with", "apply",
+];
+
+/// Generic markdown headings that are structural, not conceptual.
+const GENERIC_HEADINGS: &[&str] = &[
+    "overview", "usage", "example", "examples", "notes", "see also",
+    "references", "introduction", "summary", "background", "context",
+    "future work", "non-goals", "design decision", "how it works",
+    "why this module exists", "safety / correctness", "top-level contract",
+    "purpose", "modes", "gating", "actions", "implementation",
+    "testing", "changelog", "license", "contributing", "appendix",
+    "getting started",
+];
 
 /// A typed concept extracted from a source file.
 #[allow(dead_code)]
@@ -13,6 +35,7 @@ pub struct Concept {
 }
 
 /// The kind of concept extracted.
+#[allow(dead_code)]
 pub enum ConceptKind {
     Struct,
     Enum,
@@ -78,7 +101,17 @@ pub fn scan_page_for_concepts(page_content: &str, concepts: &[Concept]) -> Vec<S
     matched
 }
 
-/// Extract Rust concepts: pub struct/enum/trait/fn and module docstrings.
+/// Check if a name is on the stoplist.
+fn is_stopped(name: &str) -> bool {
+    CONCEPT_STOPLIST.contains(&name.to_lowercase().as_str())
+}
+
+/// Extract Rust concepts: `pub struct/enum/trait/fn` names only.
+///
+/// Dropped from v1: module docstrings (`//!` lines) were too noisy
+/// (prose sentences, not concept names). `CamelCase` splits (e.g.
+/// `AuthConfig` generating separate Auth and Config concepts) flooded
+/// the graph with generic words.
 fn extract_rust_concepts(content: &str, source_file: &str) -> Vec<Concept> {
     let mut concepts = Vec::new();
 
@@ -92,14 +125,13 @@ fn extract_rust_concepts(content: &str, source_file: &str) -> Vec<Concept> {
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        // Public items — reuses the pattern from suggest.rs extract_rust_terms
         for (prefix, kind_template) in prefixes {
             if let Some(rest) = trimmed.strip_prefix(prefix) {
                 let name = rest
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .next()
                     .unwrap_or("");
-                if name.len() >= 3 {
+                if name.len() >= 4 && !is_stopped(name) {
                     let kind = match kind_template {
                         ConceptKind::Function => ConceptKind::Function,
                         ConceptKind::Struct => ConceptKind::Struct,
@@ -113,32 +145,7 @@ fn extract_rust_concepts(content: &str, source_file: &str) -> Vec<Concept> {
                         source_file: source_file.to_string(),
                         line: Some(line_num + 1),
                     });
-
-                    // Also add CamelCase splits as DocComment concepts
-                    for word in split_camel_case(name) {
-                        if word.len() >= 4 {
-                            concepts.push(Concept {
-                                name: word,
-                                kind: ConceptKind::DocComment,
-                                source_file: source_file.to_string(),
-                                line: Some(line_num + 1),
-                            });
-                        }
-                    }
                 }
-            }
-        }
-
-        // Module docstrings (//! lines)
-        if let Some(doc) = trimmed.strip_prefix("//! ") {
-            let doc = doc.trim();
-            if doc.len() >= 4 {
-                concepts.push(Concept {
-                    name: doc.to_string(),
-                    kind: ConceptKind::Module,
-                    source_file: source_file.to_string(),
-                    line: Some(line_num + 1),
-                });
             }
         }
     }
@@ -146,7 +153,10 @@ fn extract_rust_concepts(content: &str, source_file: &str) -> Vec<Concept> {
     concepts
 }
 
-/// Extract Markdown concepts: ## and ### headings as Section concepts.
+/// Extract Markdown concepts: `##` and `###` headings as Section concepts.
+///
+/// Filters: skip headings with > 6 words (prose descriptions, not concept
+/// names) and generic structural headings (Overview, Usage, etc.).
 fn extract_markdown_concepts(content: &str, source_file: &str) -> Vec<Concept> {
     let mut concepts = Vec::new();
 
@@ -158,14 +168,29 @@ fn extract_markdown_concepts(content: &str, source_file: &str) -> Vec<Concept> {
             .or_else(|| trimmed.strip_prefix("## "))
         {
             let heading = heading.trim();
-            if !heading.is_empty() {
-                concepts.push(Concept {
-                    name: heading.to_string(),
-                    kind: ConceptKind::MarkdownSection,
-                    source_file: source_file.to_string(),
-                    line: Some(line_num + 1),
-                });
+            if heading.is_empty() {
+                continue;
             }
+
+            let word_count = heading.split_whitespace().count();
+            if word_count > 6 {
+                continue;
+            }
+
+            let lower = heading.to_lowercase();
+            if GENERIC_HEADINGS
+                .iter()
+                .any(|g| lower == *g || lower.starts_with(g))
+            {
+                continue;
+            }
+
+            concepts.push(Concept {
+                name: heading.to_string(),
+                kind: ConceptKind::MarkdownSection,
+                source_file: source_file.to_string(),
+                line: Some(line_num + 1),
+            });
         }
     }
 
@@ -201,7 +226,7 @@ pub fn authenticate_user(req: &Request) -> bool {
     true
 }
 
-pub enum Status {
+pub enum TrustTier {
     Active,
     Inactive,
 }
@@ -211,34 +236,25 @@ pub trait Validator {
 }
 ";
         let concepts = extract_rust_concepts(content, "src/auth.rs");
-        let names: Vec<&str> = concepts
-            .iter()
-            .filter(|c| !matches!(c.kind, ConceptKind::DocComment))
-            .map(|c| c.name.as_str())
-            .collect();
+        let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"AuthConfig"), "missing AuthConfig");
         assert!(
             names.contains(&"authenticate_user"),
             "missing authenticate_user"
         );
-        assert!(names.contains(&"Status"), "missing Status");
+        assert!(names.contains(&"TrustTier"), "missing TrustTier");
         assert!(names.contains(&"Validator"), "missing Validator");
 
-        // Check line numbers
+        // No CamelCase splits (dropped in v2)
+        assert!(!names.contains(&"Auth"), "CamelCase splits should not appear");
+
         let auth_config = concepts.iter().find(|c| c.name == "AuthConfig").unwrap();
         assert_eq!(auth_config.line, Some(1));
         assert!(matches!(auth_config.kind, ConceptKind::Struct));
-
-        let auth_fn = concepts
-            .iter()
-            .find(|c| c.name == "authenticate_user")
-            .unwrap();
-        assert_eq!(auth_fn.line, Some(5));
-        assert!(matches!(auth_fn.kind, ConceptKind::Function));
     }
 
     #[test]
-    fn extract_module_docstrings() {
+    fn module_docstrings_not_extracted() {
         let content = "\
 //! This module handles authentication flows.
 //! It supports OAuth and API keys.
@@ -250,11 +266,7 @@ pub fn login() {}
             .iter()
             .filter(|c| matches!(c.kind, ConceptKind::Module))
             .collect();
-        assert_eq!(modules.len(), 2);
-        assert_eq!(
-            modules[0].name,
-            "This module handles authentication flows."
-        );
+        assert_eq!(modules.len(), 0);
     }
 
     #[test]
@@ -266,14 +278,20 @@ Some text here.
 ### Installation
 More text.
 ## API Reference
+## Overview
+## This heading has way too many words to be a concept name
 ";
         let concepts = extract_markdown_concepts(content, "docs/guide.md");
         let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"Getting Started"));
         assert!(names.contains(&"Installation"));
         assert!(names.contains(&"API Reference"));
-        // H1 is not extracted
         assert!(!names.contains(&"Top Level"));
+        assert!(!names.contains(&"Getting Started"));
+        assert!(!names.contains(&"Overview"));
+        assert!(
+            !names.iter().any(|n| n.contains("way too many")),
+            "long headings should be filtered"
+        );
     }
 
     #[test]
@@ -302,13 +320,13 @@ More text.
     #[test]
     fn scan_page_deduplicates() {
         let concepts = vec![Concept {
-            name: "Config".to_string(),
+            name: "AuthConfig".to_string(),
             kind: ConceptKind::Struct,
             source_file: "src/config.rs".to_string(),
             line: Some(1),
         }];
 
-        let page_content = "The Config struct holds Config values for Config.";
+        let page_content = "The AuthConfig struct holds AuthConfig values.";
         let matched = scan_page_for_concepts(page_content, &concepts);
         assert_eq!(matched.len(), 1);
     }
@@ -325,13 +343,21 @@ More text.
     }
 
     #[test]
-    fn extract_concepts_skips_short_names() {
-        let content = "pub fn go() {}\npub struct OK {}\n";
+    fn stoplist_filters_generic_names() {
+        let content = "pub fn new() {}\npub fn init() {}\npub struct Config {}\npub fn build_scheduler() {}\n";
+        let concepts = extract_rust_concepts(content, "src/generic.rs");
+        let names: Vec<&str> = concepts.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"init"));
+        assert!(names.contains(&"build_scheduler"));
+    }
+
+    #[test]
+    fn short_names_skipped() {
+        let content = "pub fn go() {}\npub struct OK {}\npub fn run() {}\n";
         let concepts = extract_rust_concepts(content, "src/tiny.rs");
-        let primary: Vec<&Concept> = concepts
-            .iter()
-            .filter(|c| !matches!(c.kind, ConceptKind::DocComment))
-            .collect();
-        assert!(primary.is_empty(), "names shorter than 3 chars should be skipped");
+        assert!(
+            concepts.is_empty(),
+            "names shorter than 4 chars or on stoplist should be skipped"
+        );
     }
 }
