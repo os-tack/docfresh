@@ -297,7 +297,7 @@ mod tests {
             name: "TokenValidator".to_string(),
             kind: ConceptKind::Struct,
             source_file: "src/auth.rs".to_string(),
-            line: Some(1),
+            line: Some(1), description: None,
         }];
 
         let manifest = make_manifest(vec![Page {
@@ -341,13 +341,13 @@ mod tests {
                 name: "start_engine".to_string(),
                 kind: ConceptKind::Function,
                 source_file: "src/engine.rs".to_string(),
-                line: Some(1),
+                line: Some(1), description: None,
             },
             Concept {
                 name: "stop_engine".to_string(),
                 kind: ConceptKind::Function,
                 source_file: "src/engine.rs".to_string(),
-                line: Some(2),
+                line: Some(2), description: None,
             },
         ];
 
@@ -406,7 +406,7 @@ mod tests {
             name: "Config".to_string(),
             kind: ConceptKind::Struct,
             source_file: "src/shared.rs".to_string(),
-            line: Some(1),
+            line: Some(1), description: None,
         }];
 
         let manifest = make_manifest(vec![
@@ -466,7 +466,7 @@ mod tests {
             name: "helper".to_string(),
             kind: ConceptKind::Function,
             source_file: "src/lib.rs".to_string(),
-            line: Some(1),
+            line: Some(1), description: None,
         }];
 
         let manifest = make_manifest(vec![]);
